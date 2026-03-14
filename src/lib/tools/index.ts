@@ -1,6 +1,10 @@
 // Tool System - Available tools for agents
 
 import ZAI from 'z-ai-web-dev-sdk'
+import { exec } from 'child_process'
+import { promisify } from 'util'
+
+const execAsync = promisify(exec)
 
 export interface Tool {
   name: string
@@ -836,6 +840,63 @@ export const dateTimeTool: Tool = {
   }
 }
 
+// ============ TERMINAL TOOL - ROOT/SUDO ACCESS ============
+
+export const terminalTool: Tool = {
+  name: 'terminal',
+  description: 'Izvršava shell komande na sistemu. Agent ima pristup terminalu, može da čita fajlove, pokreće skripte, instalira pakete. Koristi pažljivo!',
+  parameters: {
+    type: 'object',
+    properties: {
+      command: {
+        type: 'string',
+        description: 'Shell komanda za izvršavanje (npr. "ls -la", "cat file.txt", "npm install package")'
+      },
+      timeout: {
+        type: 'number',
+        description: 'Timeout u milisekundama (default: 30000, max: 120000)'
+      }
+    },
+    required: ['command']
+  },
+  execute: async (params) => {
+    const command = String(params.command || '')
+    const timeout = Math.min(Number(params.timeout) || 30000, 120000)
+    const startTime = Date.now()
+    
+    if (!command.trim()) {
+      return { success: false, error: 'Komanda je obavezna' }
+    }
+    
+    try {
+      const { stdout, stderr } = await execAsync(command, {
+        timeout,
+        maxBuffer: 1024 * 1024 * 10,
+        cwd: '/home/z/my-project'
+      })
+      
+      return {
+        success: true,
+        command,
+        stdout: stdout.slice(0, 8000),
+        stderr: stderr.slice(0, 2000),
+        exitCode: 0,
+        executionTime: Date.now() - startTime
+      }
+    } catch (error: unknown) {
+      const execError = error as { stdout?: string; stderr?: string; code?: number; killed?: boolean }
+      return {
+        success: false,
+        command,
+        stdout: execError.stdout?.slice(0, 8000) || '',
+        stderr: execError.stderr?.slice(0, 2000) || (execError.killed ? 'Timeout!' : String(error)),
+        exitCode: execError.code || 1,
+        executionTime: Date.now() - startTime
+      }
+    }
+  }
+}
+
 // ============ TOOL REGISTRY ============
 
 export const toolRegistry: Map<string, Tool> = new Map([
@@ -846,7 +907,8 @@ export const toolRegistry: Map<string, Tool> = new Map([
   ['unit_converter', unitConverterTool],
   ['web_search', webSearchTool],
   ['code_execute', codeExecutionTool],
-  ['datetime', dateTimeTool]
+  ['datetime', dateTimeTool],
+  ['terminal', terminalTool]
 ])
 
 export function getTool(name: string): Tool | undefined {
@@ -875,6 +937,11 @@ export async function executeTool(
 export function selectTools(query: string): string[] {
   const selected: string[] = []
   const lower = query.toLowerCase()
+  
+  // Terminal - komande na sistemu
+  if (/terminal|shell|izvrši|pokreni|instaliraj|npm|git |ls |cat |mkdir|rm |sudo|apt|pip|komanda|fajl sist|sistem|process|running|services|docker|systemctl/i.test(lower)) {
+    selected.push('terminal')
+  }
   
   // Math/calculation
   if (/[\d+\-*/^()=]|calculate|compute|what is \d|how much|percentage|average|sum|multiply|divide|add|subtract/.test(lower)) {

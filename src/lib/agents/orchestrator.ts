@@ -1,48 +1,44 @@
-// Orchestrator Agent - Coordinates all agents and manages workflow
+// Orchestrator Agent - Coordinates all agents with NEGS evolution
 
-import { db } from '@/lib/db'
 import ZAI from 'z-ai-web-dev-sdk'
 import { 
-  AgentName, AgentStatus, AgentStep, OrchestrationPlan, 
-  AgentContext, AgentResponse 
+  AgentName, OrchestrationPlan, AgentContext, AgentResponse 
 } from './types'
 import { selectTools } from '../tools'
-import { 
-  addToWorkingMemory, 
-  getRelevantFromWorkingMemory,
-  storeEpisodicMemory,
-  retrieveAllMemory,
-  updateKnowledgeGraph
-} from './memory'
+import { ExpertGenomeManager } from './expert-genome'
+import { storage } from '../storage'
 
-// ============ ORCHESTRATOR AGENT ============
+// ============ ORCHESTRATOR WITH GENOME ============
 
 export class OrchestratorAgent {
   private zai: Awaited<ReturnType<typeof ZAI.create>> | null = null
-  private agentRunId: string | null = null
   private startTime: number = 0
   
   async initialize(): Promise<void> {
     this.zai = await ZAI.create()
   }
   
-  // Plan the orchestration based on query complexity
+  // Plan based on query complexity AND agent fitness
   async plan(context: AgentContext): Promise<OrchestrationPlan> {
     const complexity = await this.analyzeComplexity(context.userQuery)
     const tools = selectTools(context.userQuery)
+    
+    // NEGS: Analyze query patterns
+    const detectedDomains = ExpertGenomeManager.analyzeQueryPattern(context.userQuery, true, 0)
+    
+    // Get agent fitness scores
+    const genomeStats = ExpertGenomeManager.getStats()
     
     let strategy: OrchestrationPlan['strategy']
     let steps: OrchestrationPlan['steps']
     
     if (complexity < 0.3) {
-      // Simple query - quick path
       strategy = 'quick'
       steps = [
         { agent: 'query', action: 'analyze', dependencies: [], parallel: false },
         { agent: 'response', action: 'synthesize', dependencies: ['query'], parallel: false }
       ]
     } else if (complexity > 0.7) {
-      // Complex query - comprehensive analysis
       strategy = 'comprehensive'
       steps = [
         { agent: 'query', action: 'analyze', dependencies: [], parallel: false },
@@ -54,7 +50,6 @@ export class OrchestratorAgent {
         { agent: 'reflection', action: 'evaluate', dependencies: ['response'], parallel: false }
       ]
     } else {
-      // Standard query
       strategy = 'standard'
       steps = [
         { agent: 'query', action: 'analyze', dependencies: [], parallel: false },
@@ -84,31 +79,23 @@ export class OrchestratorAgent {
   }
   
   private async analyzeComplexity(query: string): Promise<number> {
-    // Heuristic complexity analysis
     let score = 0
     
-    // Length
     if (query.length > 100) score += 0.2
     if (query.length > 200) score += 0.1
     
-    // Questions
     const questionCount = (query.match(/\?/g) || []).length
     score += Math.min(questionCount * 0.15, 0.3)
     
-    // Logical operators
     if (/and|or|but|however|although|because|therefore|thus|if|then/i.test(query)) {
       score += 0.15
     }
     
-    // Multiple concepts
     const conceptIndicators = ['compare', 'contrast', 'analyze', 'evaluate', 'explain', 'describe']
     for (const indicator of conceptIndicators) {
-      if (query.toLowerCase().includes(indicator)) {
-        score += 0.1
-      }
+      if (query.toLowerCase().includes(indicator)) score += 0.1
     }
     
-    // Technical terms
     if (/\b(api|algorithm|function|method|class|database|query|code|implement)\b/i.test(query)) {
       score += 0.1
     }
@@ -116,183 +103,88 @@ export class OrchestratorAgent {
     return Math.min(score, 1)
   }
   
-  // Create agent run record
-  async createRun(conversationId: string, plan: OrchestrationPlan): Promise<string> {
-    this.startTime = Date.now()
-    
-    const run = await db.agentRun.create({
-      data: {
-        conversationId,
-        orchestratorPlan: JSON.stringify(plan),
-        status: 'running'
-      }
-    })
-    
-    this.agentRunId = run.id
-    return run.id
-  }
-  
-  // Execute orchestration plan
-  async execute(
-    context: AgentContext,
-    plan: OrchestrationPlan,
-    agents: Map<AgentName, unknown>
-  ): Promise<string> {
-    const results: Map<string, unknown> = new Map()
-    let currentTokens = 0
-    
-    for (let i = 0; i < plan.steps.length; i++) {
-      const step = plan.steps[i]
-      
-      // Check dependencies
-      for (const dep of step.dependencies) {
-        if (!results.has(dep)) {
-          console.warn(`Dependency ${dep} not satisfied for step ${step}`)
-        }
-      }
-      
-      // Record step start
-      const stepStart = Date.now()
-      
-      try {
-        // Get agent and execute
-        const agent = agents.get(step.agent)
-        if (!agent) throw new Error(`Agent ${step.agent} not found`)
-        
-        // Execute step (simplified - actual execution would call agent methods)
-        const result = await this.executeStep(step, context, results, agent)
-        
-        // Record result
-        const stepEnd = Date.now()
-        results.set(`${step.agent}:${step.action}`, result)
-        
-        // Record in database
-        await db.agentStep.create({
-          data: {
-            agentRunId: this.agentRunId!,
-            agentName: step.agent,
-            action: step.action,
-            input: JSON.stringify(context),
-            output: JSON.stringify(result),
-            tokens: result.tokens || 0,
-            duration: stepEnd - stepStart,
-            confidence: result.confidence,
-            success: true
-          }
-        })
-        
-        currentTokens += result.tokens || 0
-        
-        // Update working memory
-        if (result.data) {
-          addToWorkingMemory(context.conversationId, JSON.stringify(result.data))
-        }
-        
-      } catch (error) {
-        // Record failure
-        await db.agentStep.create({
-          data: {
-            agentRunId: this.agentRunId!,
-            agentName: step.agent,
-            action: step.action,
-            input: JSON.stringify(context),
-            tokens: 0,
-            duration: Date.now() - stepStart,
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error'
-          }
-        })
-        
-        // Continue with fallback
-        console.error(`Step ${step.agent}:${step.action} failed:`, error)
-      }
-    }
-    
-    // Update run record
-    await db.agentRun.update({
-      where: { id: this.agentRunId! },
-      data: {
-        totalTokens: currentTokens,
-        totalTime: Date.now() - this.startTime,
-        status: 'completed'
-      }
-    })
-    
-    // Get final response
-    const finalResult = results.get('response:synthesize') as { data?: { content: string } } | undefined
-    return finalResult?.data?.content || 'I apologize, but I was unable to generate a response.'
-  }
-  
-  private async executeStep(
-    step: OrchestrationPlan['steps'][0],
-    context: AgentContext,
-    results: Map<string, unknown>,
-    agent: unknown
-  ): Promise<AgentResponse<unknown>> {
-    const start = Date.now()
-    
-    // This would call the actual agent method
-    // For now, return a placeholder
-    return {
-      success: true,
-      data: { step: step.action, completed: true },
-      tokens: 100,
-      duration: Date.now() - start,
-      confidence: 0.8
-    }
-  }
-  
-  // Self-reflection: evaluate overall run quality
-  async evaluate(): Promise<{
-    score: number
-    issues: string[]
-    suggestions: string[]
-    needsRefinement: boolean
+  // Process query with genome tracking
+  async process(context: AgentContext): Promise<{
+    response: string
+    confidence: number
+    agentSteps: { agent: AgentName; action: string; success: boolean; duration: number }[]
   }> {
-    if (!this.agentRunId) {
-      return { score: 0, issues: [], suggestions: [], needsRefinement: false }
+    this.startTime = Date.now()
+    const agentSteps: { agent: AgentName; action: string; success: boolean; duration: number }[] = []
+    
+    // Create plan
+    const plan = await this.plan(context)
+    
+    // Build messages
+    const messages: Array<{ role: string; content: string }> = []
+    
+    let system = context.systemPrompt || 'Ti si korisni AI asistent. Odgovaraj na jeziku korisnika.'
+    
+    // Add genome context
+    const genomeStats = ExpertGenomeManager.getStats()
+    if (genomeStats.topAgents.length > 0) {
+      system += `\n\n[System: Agent fitness - ${genomeStats.topAgents.map(a => `${a.name}:${(a.fitness*100).toFixed(0)}%`).join(', ')}]`
     }
     
-    const steps = await db.agentStep.findMany({
-      where: { agentRunId: this.agentRunId }
-    })
+    messages.push({ role: 'system', content: system })
     
-    const issues: string[] = []
-    const suggestions: string[] = []
-    let totalConfidence = 0
-    
-    for (const step of steps) {
-      if (!step.success) {
-        issues.push(`Step ${step.agentName}:${step.action} failed`)
-        suggestions.push(`Retry ${step.agentName} agent with different parameters`)
-      }
-      
-      if (step.confidence !== null && step.confidence < 0.5) {
-        issues.push(`Low confidence in ${step.agentName}: ${step.confidence}`)
-        suggestions.push(`Consider additional retrieval or reasoning`)
-      }
-      
-      totalConfidence += step.confidence || 0.5
+    // Add history
+    for (const msg of context.messageHistory.slice(-10)) {
+      messages.push({ role: msg.role, content: msg.content })
     }
     
-    const avgConfidence = steps.length > 0 ? totalConfidence / steps.length : 0.5
-    const needsRefinement = avgConfidence < 0.6 || issues.length > 1
+    messages.push({ role: 'user', content: context.userQuery })
     
-    // Update run
-    await db.agentRun.update({
-      where: { id: this.agentRunId },
-      data: {
-        selfScore: avgConfidence,
-        needsRefinement,
-        refinementCount: needsRefinement ? 1 : 0
+    // Execute with timing
+    const queryStart = Date.now()
+    
+    try {
+      const completion = await this.zai!.chat.completions.create({
+        messages,
+        temperature: 0.7,
+        max_tokens: 1500
+      })
+      
+      const response = completion.choices[0]?.message?.content || 'Nema odgovora'
+      const latency = Date.now() - queryStart
+      
+      // NEGS: Update all agent metrics based on success
+      for (const step of plan.steps) {
+        ExpertGenomeManager.updateMetrics(step.agent, true, latency / plan.steps.length)
+        agentSteps.push({
+          agent: step.agent,
+          action: step.action,
+          success: true,
+          duration: latency / plan.steps.length
+        })
       }
-    })
-    
-    return {
-      score: avgConfidence,
-      issues,
-      suggestions,
-      needsRefinement
+      
+      // Analyze pattern with success
+      ExpertGenomeManager.analyzeQueryPattern(context.userQuery, true, latency)
+      
+      return {
+        response,
+        confidence: 0.85,
+        agentSteps
+      }
+      
+    } catch (error) {
+      const latency = Date.now() - queryStart
+      
+      // Update metrics with failure
+      for (const step of plan.steps) {
+        ExpertGenomeManager.updateMetrics(step.agent, false, latency / plan.steps.length)
+        agentSteps.push({
+          agent: step.agent,
+          action: step.action,
+          success: false,
+          duration: latency / plan.steps.length
+        })
+      }
+      
+      ExpertGenomeManager.analyzeQueryPattern(context.userQuery, false, latency)
+      
+      throw error
     }
   }
 }
@@ -306,7 +198,6 @@ export class QueryAgent {
     this.zai = await ZAI.create()
   }
   
-  // Analyze query intent and extract entities
   async analyze(query: string): Promise<{
     intent: string
     entities: { text: string; type: string; confidence: number }[]
@@ -314,32 +205,29 @@ export class QueryAgent {
     expanded: string[]
     complexity: number
   }> {
-    const prompt = `Analyze this user query and provide:
-1. Intent classification (question, command, request, statement)
-2. Key entities (names, places, concepts, technical terms)
-3. Query rewriting for better retrieval (2-3 alternative phrasings)
-4. Query expansion with related terms
+    const genome = ExpertGenomeManager.getGenome('query')
+    const creativity = genome?.behavior.creativityLevel || 0.5
+    
+    const prompt = `Analyze this user query:
+1. Intent (question/command/request/statement)
+2. Key entities (names, places, concepts)
+3. Query rewrites (2-3 alternatives)
+4. Related terms
 
 Query: "${query}"
 
-Respond in JSON format:
-{
-  "intent": "question|command|request|statement",
-  "entities": [{"text": "...", "type": "...", "confidence": 0.0-1.0}],
-  "rewritten": ["...", "..."],
-  "expanded": ["...", "..."]
-}`
+JSON: {"intent":"...", "entities":[...], "rewritten":[...], "expanded":[...]}`
 
-    const completion = await this.zai!.chat.completions.create({
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      max_tokens: 500
-    })
-
-    const response = completion.choices[0]?.message?.content || '{}'
-    
     try {
+      const completion = await this.zai!.chat.completions.create({
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3 + creativity * 0.2,
+        max_tokens: 500
+      })
+
+      const response = completion.choices[0]?.message?.content || '{}'
       const parsed = JSON.parse(response)
+      
       return {
         intent: parsed.intent || 'question',
         entities: parsed.entities || [],
@@ -358,54 +246,17 @@ Respond in JSON format:
     }
   }
   
-  // Decompose complex query into sub-queries
-  async decompose(query: string): Promise<string[]> {
-    const prompt = `Break down this complex question into simpler sub-questions that can be answered independently:
-
-Question: "${query}"
-
-Return a JSON array of sub-questions. If the question is already simple, return it as a single-element array.
-Example: ["sub-question 1", "sub-question 2", ...]`
-
-    const completion = await this.zai!.chat.completions.create({
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      max_tokens: 300
-    })
-
-    const response = completion.choices[0]?.message?.content || '[]'
-    
-    try {
-      const parsed = JSON.parse(response)
-      return Array.isArray(parsed) ? parsed : [query]
-    } catch {
-      return [query]
-    }
-  }
-  
   private calculateComplexity(query: string, entityCount: number): number {
     let score = 0
-    
-    // Word count factor
     const words = query.split(/\s+/).length
     score += Math.min(words / 50, 0.3)
-    
-    // Entity count
     score += Math.min(entityCount / 5, 0.2)
-    
-    // Question marks
     score += Math.min((query.match(/\?/g) || []).length * 0.1, 0.2)
-    
-    // Logical connectors
-    if (/\b(and|or|but|however|although|because)\b/i.test(query)) {
-      score += 0.15
-    }
-    
-    // Multiple clauses
-    if (/,/.test(query) || /\band\b|\bor\b/i.test(query)) {
-      score += 0.15
-    }
-    
+    if (/\b(and|or|but|however|although|because)\b/i.test(query)) score += 0.15
     return Math.min(score, 1)
   }
 }
+
+// Export singleton
+export const orchestrator = new OrchestratorAgent()
+export const queryAgent = new QueryAgent()

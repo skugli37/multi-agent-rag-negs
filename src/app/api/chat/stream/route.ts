@@ -1,18 +1,16 @@
 import { NextRequest } from 'next/server'
-import { db } from '@/lib/db'
-import { getPipeline } from '@/lib/agents/pipeline'
+import ZAI from 'z-ai-web-dev-sdk'
+import { storage } from '@/lib/storage'
+import { selectTools, executeTool } from '@/lib/tools'
+import { searchDocuments, getAllDocuments } from '@/lib/document-storage'
+import { ExpertGenomeManager } from '@/lib/agents/expert-genome'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// Multi-Agent Streaming API with real-time agent updates
 export async function POST(request: NextRequest) {
-  const { 
-    message, 
-    conversationId, 
-    systemPrompt, 
-    useRag = true 
-  } = await request.json()
+  const startTime = Date.now()
+  const { message, conversationId, systemPrompt, useRag = true } = await request.json()
 
   if (!message) {
     return new Response(JSON.stringify({ error: 'Poruka je obavezna' }), { status: 400 })
@@ -27,118 +25,153 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        // Get/create conversation
-        let conv = conversationId 
-          ? await db.conversation.findUnique({ where: { id: conversationId } })
-          : null
+        // ========== NEGS: SELECT BEST AGENT ==========
+        const selection = ExpertGenomeManager.selectBestAgent(message)
         
-        if (!conv) {
-          conv = await db.conversation.create({
-            data: { title: message.slice(0, 50) }
+        send('negs_selection', {
+          selectedAgent: selection.agent,
+          reason: selection.reason,
+          fitness: selection.fitness,
+          alternatives: selection.allScores
+        })
+
+        // ========== NEGS: AGENT THINKING ==========
+        const thinkResult = ExpertGenomeManager.think(selection.agent, message)
+        
+        send('negs_thinking', {
+          agent: selection.agent,
+          reasoning: thinkResult.reasoning,
+          confidence: thinkResult.confidence,
+          strategy: thinkResult.strategy
+        })
+
+        // ========== CONVERSATION ==========
+        let convId = conversationId
+        if (!convId) {
+          const newConv = await storage.createConversation()
+          convId = newConv.id
+        }
+        send('conversation', { conversationId: convId })
+        await storage.addMessage(convId, 'user', message)
+
+        const historyMessages = await storage.getMessages(convId)
+        const history = historyMessages.slice(-10).map(m => ({ role: m.role, content: m.content }))
+
+        // ========== TOOLS ==========
+        const tools = selectTools(message)
+        let toolResults: Record<string, unknown> = {}
+        
+        for (const tool of tools) {
+          try {
+            const result = await executeTool(tool, { expression: message, text: message })
+            toolResults[tool] = result
+            ExpertGenomeManager.updateMetrics('query', true, 50)
+          } catch (e) {
+            ExpertGenomeManager.updateMetrics('query', false, 50)
+          }
+        }
+
+        // ========== RAG ==========
+        let citations: { documentId: string; filename: string; content: string; score: number }[] = []
+        
+        if (useRag) {
+          const allDocs = getAllDocuments()
+          if (allDocs.length > 0) {
+            citations = searchDocuments(message, 3)
+            ExpertGenomeManager.updateMetrics('retrieval', citations.length > 0, 30)
+          }
+        }
+        
+        // Thinking for retrieval
+        if (citations.length > 0) {
+          const retrievalThink = ExpertGenomeManager.think('retrieval', message)
+          send('negs_thinking', {
+            agent: 'retrieval',
+            reasoning: retrievalThink.reasoning,
+            confidence: retrievalThink.confidence,
+            strategy: retrievalThink.strategy
           })
-          send('conversation', { conversationId: conv.id })
         }
-
-        // Save user message
-        await db.message.create({
-          data: {
-            conversationId: conv.id,
-            role: 'user',
-            content: message
-          }
+        
+        send('retrieval', { 
+          citations: citations.map(c => ({ filename: c.filename, score: c.score })),
+          count: citations.length
         })
 
-        // Get history
-        const history = await db.message.findMany({
-          where: { conversationId: conv.id },
-          orderBy: { createdAt: 'asc' },
-          take: 20
+        // ========== LLM ==========
+        send('reasoning', { thinking: true })
+
+        const messages: Array<{ role: string; content: string }> = []
+        
+        let system = systemPrompt || 'Ti si korisni AI asistent. Odgovaraj na jeziku korisnika.'
+        
+        if (citations.length > 0) {
+          system += '\n\n## 📚 Kontekst:\n' + 
+            citations.map((c, i) => `[${i + 1}] ${c.filename}:\n${c.content}`).join('\n\n')
+        }
+        
+        if (Object.keys(toolResults).length > 0) {
+          system += '\n\n## 🔧 Alati:\n' + JSON.stringify(toolResults, null, 2)
+        }
+        
+        messages.push({ role: 'system', content: system })
+        for (const msg of history) messages.push({ role: msg.role, content: msg.content })
+        messages.push({ role: 'user', content: message })
+
+        const zai = await ZAI.create()
+        const completion = await zai.chat.completions.create({
+          messages,
+          temperature: 0.7,
+          max_tokens: 1500
         })
 
-        // Get pipeline and stream
-        const pipeline = await getPipeline()
-        let fullContent = ''
-        let citations: object[] = []
+        const response = completion.choices[0]?.message?.content || 'Nema odgovora'
+        const latency = Date.now() - startTime
 
-        for await (const chunk of pipeline.executeStream({
-          conversationId: conv.id,
-          messageHistory: history.map(m => ({
-            id: m.id,
-            role: m.role as 'user' | 'assistant' | 'system',
-            content: m.content,
-            createdAt: m.createdAt
-          })),
-          userQuery: message,
-          systemPrompt,
-          useRag,
-          maxTokens: 2000
-        })) {
-          if (chunk.type === 'query') {
-            send('query_analysis', chunk.data)
-          } else if (chunk.type === 'retrieval') {
-            send('retrieval', chunk.data)
-            if ((chunk.data as { citations?: object[] }).citations) {
-              citations = (chunk.data as { citations?: object[] }).citations || []
-            }
-          } else if (chunk.type === 'reasoning') {
-            send('reasoning', chunk.data)
-          } else if (chunk.type === 'response') {
-            const data = chunk.data as { content: string; done: boolean }
-            if (data.content) {
-              fullContent += data.content
-              send('token', { content: data.content })
-            }
-          } else if (chunk.type === 'done') {
-            // Save assistant message
-            const assistantMessage = await db.message.create({
-              data: {
-                conversationId: conv.id,
-                role: 'assistant',
-                content: fullContent,
-                tokens: (chunk.data as { tokens?: number }).tokens || fullContent.split(' ').length,
-                agentName: 'multi_agent_pipeline'
-              }
-            })
-
-            // Save citations
-            if (citations.length > 0) {
-              for (const c of citations) {
-                const citation = c as { documentId?: string; filename?: string; content?: string; score?: number }
-                if (citation.documentId) {
-                  await db.citation.create({
-                    data: {
-                      messageId: assistantMessage.id,
-                      documentId: citation.documentId,
-                      chunkIndex: 0,
-                      content: citation.content || '',
-                      score: citation.score || 0
-                    }
-                  })
-                }
-              }
-            }
-
-            send('done', { 
-              messageId: assistantMessage.id,
-              citations,
-              ...chunk.data 
-            })
-          }
+        // ========== STREAM ==========
+        const words = response.split(' ')
+        for (let i = 0; i < words.length; i++) {
+          send('token', { content: words[i] + (i < words.length - 1 ? ' ' : '') })
+          await new Promise(r => setTimeout(r, 20))
         }
 
-        // Update conversation
-        await db.conversation.update({
-          where: { id: conv.id },
-          data: { updatedAt: new Date() }
+        const msg = await storage.addMessage(convId, 'assistant', response, 'multi_agent', 0.85)
+
+        // ========== UPDATE ALL AGENTS ==========
+        ExpertGenomeManager.updateMetrics('query', true, latency * 0.2)
+        ExpertGenomeManager.updateMetrics('retrieval', citations.length > 0, latency * 0.15)
+        ExpertGenomeManager.updateMetrics('reasoning', true, latency * 0.3)
+        ExpertGenomeManager.updateMetrics('response', true, latency * 0.25)
+        ExpertGenomeManager.updateMetrics('reflection', true, latency * 0.1)
+        ExpertGenomeManager.analyzeQueryPattern(message, true, latency)
+
+        // ========== CHECK FOR EVOLUTION ==========
+        const evolutionEvents = ExpertGenomeManager.runEvolution()
+        if (evolutionEvents.length > 0) {
+          send('negs_evolution', {
+            events: evolutionEvents.map(e => ({
+              agent: e.agentName,
+              type: e.type,
+              before: e.fitnessBefore,
+              after: e.fitnessAfter
+            }))
+          })
+        }
+
+        // ========== DONE ==========
+        send('done', {
+          messageId: msg.id,
+          citations,
+          tokens: response.split(' ').length,
+          confidence: 0.85,
+          negs: ExpertGenomeManager.getStats()
         })
 
         controller.close()
 
       } catch (error) {
         console.error('Stream error:', error)
-        send('error', { 
-          message: error instanceof Error ? error.message : 'Greška pri obradi' 
-        })
+        send('error', { message: error instanceof Error ? error.message : 'Greška' })
         controller.close()
       }
     }

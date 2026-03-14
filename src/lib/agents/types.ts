@@ -1,8 +1,58 @@
-// Agent Types and Interfaces
+// Agent Types and Interfaces - Extended with NEGS (Neural Expert Genesis System)
 
 export type AgentName = 'orchestrator' | 'query' | 'retrieval' | 'reasoning' | 'response' | 'reflection'
 export type AgentStatus = 'idle' | 'running' | 'completed' | 'failed'
 export type MemoryType = 'working' | 'episodic' | 'semantic'
+
+// ============ EXPERT GENOME (NEGS) ============
+
+export interface ExpertGenome {
+  // Identity
+  name: AgentName
+  generation: number
+  createdAt: Date
+  
+  // Domains & Competence
+  domains: DomainCompetence[]
+  primaryDomain: string
+  
+  // Behavioral DNA
+  behavior: {
+    verbosity: number        // 0.0 - 1.0
+    certaintyThreshold: number // 0.0 - 1.0
+    creativityLevel: number   // 0.0 - 1.0
+    collaborationScore: number // 0.0 - 1.0
+  }
+  
+  // Learning DNA
+  learning: {
+    learningRate: number      // 0.0 - 1.0
+    adaptationSpeed: number   // 0.0 - 1.0
+    memoryRetention: number   // 0.0 - 1.0
+  }
+  
+  // Performance Metrics
+  metrics: {
+    totalInvocations: number
+    successRate: number
+    averageLatency: number
+    userSatisfactionScore: number
+  }
+  
+  // Evolution
+  fitness: number
+  mutations: number
+  lastEvolved: Date
+}
+
+export interface DomainCompetence {
+  domain: string
+  competence: number  // 0.0 - 1.0
+  confidence: number  // 0.0 - 1.0
+  experience: number  // broj query-a
+}
+
+// ============ ORIGINAL TYPES ============
 
 export interface AgentState {
   name: AgentName
@@ -11,6 +61,7 @@ export interface AgentState {
   lastAction: string
   tokens: number
   duration: number
+  genome?: ExpertGenome  // NEGS: svaki agent ima genome
 }
 
 export interface AgentStep {
@@ -163,4 +214,31 @@ export interface ToolDefinition {
   description: string
   parameters: Record<string, unknown>
   execute: (input: unknown) => Promise<unknown>
+}
+
+// ============ NEGS: Evolution Event ============
+
+export interface EvolutionEvent {
+  timestamp: Date
+  type: 'mutation' | 'crossover' | 'selection' | 'fitness_update'
+  agentName: AgentName
+  changes: {
+    field: string
+    oldValue: unknown
+    newValue: unknown
+  }[]
+  reason: string
+  fitnessBefore: number
+  fitnessAfter: number
+}
+
+// ============ NEGS: Query Pattern ============
+
+export interface QueryPattern {
+  domain: string
+  keywords: string[]
+  count: number
+  lastSeen: Date
+  avgSuccess: number
+  avgLatency: number
 }

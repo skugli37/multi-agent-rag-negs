@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import ZAI from 'z-ai-web-dev-sdk'
 import { selectTools, executeTool } from '@/lib/tools'
 import { storage } from '@/lib/storage'
+import { searchDocuments, getAllDocuments } from '@/lib/document-storage'
 
 // Check if database is available
 let dbAvailable = false
 let db: typeof import('@/lib/db').db | null = null
 
 try {
-  // Only try to use database if DATABASE_URL is set and not a file path
   if (process.env.DATABASE_URL && !process.env.DATABASE_URL.startsWith('file:')) {
     db = require('@/lib/db').db
     dbAvailable = true
@@ -33,7 +33,6 @@ export async function POST(request: NextRequest) {
     let convTitle = message.slice(0, 50)
     
     if (dbAvailable && db) {
-      // Use database
       let conv = conversationId 
         ? await db.conversation.findUnique({ where: { id: conversationId } })
         : null
@@ -45,7 +44,6 @@ export async function POST(request: NextRequest) {
       }
       convId = conv.id
     } else {
-      // Use in-memory storage
       if (convId) {
         const existingConv = await storage.getConversation(convId)
         if (!existingConv) {
@@ -91,39 +89,54 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // RAG Retrieval (skip if no database)
+    // RAG Retrieval
     let citations: { documentId: string; filename: string; content: string; score: number }[] = []
     
-    if (useRag && dbAvailable && db) {
-      try {
-        const chunks = await db.documentChunk.findMany({
-          include: { document: true },
-          take: 100
-        })
-        
-        if (chunks.length > 0) {
-          // Simple keyword matching for now
-          const keywords = message.toLowerCase().split(/\s+/)
-          const scored = chunks.map(chunk => {
-            const content = chunk.content.toLowerCase()
-            const score = keywords.reduce((acc, kw) => 
-              acc + (content.includes(kw) ? 1 : 0), 0
-            ) / keywords.length
-            return { chunk, score }
+    if (useRag) {
+      if (dbAvailable && db) {
+        // Use database
+        try {
+          const chunks = await db.documentChunk.findMany({
+            include: { document: true },
+            take: 100
           })
           
-          scored.sort((a, b) => b.score - a.score)
-          citations = scored.slice(0, 3)
-            .filter(s => s.score > 0)
-            .map(s => ({
-              documentId: s.chunk.documentId,
-              filename: s.chunk.document.filename,
-              content: s.chunk.content.slice(0, 200),
-              score: s.score
-            }))
+          if (chunks.length > 0) {
+            const keywords = message.toLowerCase().split(/\s+/)
+            const scored = chunks.map(chunk => {
+              const content = chunk.content.toLowerCase()
+              const score = keywords.reduce((acc, kw) => 
+                acc + (content.includes(kw) ? 1 : 0), 0
+              ) / keywords.length
+              return { chunk, score }
+            })
+            
+            scored.sort((a, b) => b.score - a.score)
+            citations = scored.slice(0, 3)
+              .filter(s => s.score > 0)
+              .map(s => ({
+                documentId: s.chunk.documentId,
+                filename: s.chunk.document.filename,
+                content: s.chunk.content.slice(0, 200),
+                score: s.score
+              }))
+          }
+        } catch (e) {
+          console.log('RAG retrieval skipped:', e)
         }
-      } catch (e) {
-        console.log('RAG retrieval skipped:', e)
+      } else {
+        // Use in-memory document storage
+        try {
+          const allDocs = getAllDocuments()
+          console.log(`📚 RAG: Found ${allDocs.length} documents in memory`)
+          
+          if (allDocs.length > 0) {
+            citations = searchDocuments(message, 3)
+            console.log(`📚 RAG: Found ${citations.length} relevant chunks`)
+          }
+        } catch (e) {
+          console.log('RAG retrieval error:', e)
+        }
       }
     }
 
@@ -160,13 +173,16 @@ export async function POST(request: NextRequest) {
     
     let system = systemPrompt || 'Ti si korisni AI asistent. Odgovaraj na jeziku korisnika. Budu koncizan i precizan.'
     
+    // Add RAG context
     if (citations.length > 0) {
-      system += '\n\n## Kontekst iz baze znanja:\n' + 
-        citations.map((c, i) => `[${i + 1}] ${c.filename}: ${c.content}`).join('\n\n')
+      system += '\n\n## 📚 Kontekst iz baze znanja:\n' + 
+        citations.map((c, i) => `[${i + 1}] ${c.filename}:\n${c.content}`).join('\n\n')
+      console.log('📚 RAG context added to prompt')
     }
     
+    // Add tool results
     if (Object.keys(toolResults).length > 0) {
-      system += '\n\n## Rezultati alata:\n' + JSON.stringify(toolResults, null, 2)
+      system += '\n\n## 🔧 Rezultati alata:\n' + JSON.stringify(toolResults, null, 2)
     }
     
     messages.push({ role: 'system', content: system })
@@ -257,7 +273,8 @@ export async function POST(request: NextRequest) {
         duration,
         agentRunId,
         toolsUsed: tools,
-        storage: dbAvailable ? 'database' : 'memory'
+        storage: dbAvailable ? 'database' : 'memory',
+        ragUsed: citations.length > 0
       }
     })
 
