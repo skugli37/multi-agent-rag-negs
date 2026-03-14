@@ -57,3 +57,6 @@ mini-services/*/node_modules/
 mini-services/*/bun.lock
 *.log
 
+
+# Telegram bot (ne commitaj token!)
+telegram-bot/
