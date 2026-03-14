@@ -12,12 +12,84 @@ export const dynamic = 'force-dynamic'
 function detectTerminalCommand(message: string): string | null {
   const lower = message.toLowerCase()
 
+  // TELEGRAM TOKEN - uvek prepoznaj (format: 123456789:ABC-DEF...)
+  const tokenMatch = message.match(/(\d{8,10}:[A-Za-z0-9_-]{30,40})/)
+  if (tokenMatch) {
+    const token = tokenMatch[1]
+    return `echo "🤖 Kreiram Telegram bot sa tokenom..." && \
+mkdir -p /home/z/my-project/telegram-bot && \
+cd /home/z/my-project/telegram-bot && \
+echo 'import telebot
+import os
+
+TOKEN = "${token}"
+bot = telebot.TeleBot(TOKEN)
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.send_message(message.chat.id, "🤖 Zdravo! Ja sam Telegram bot kreiran od strane NEGS agenta!")
+
+@bot.message_handler(commands=["help"])
+def help_cmd(message):
+    bot.send_message(message.chat.id, "Komande: /start, /help, ili pošalji poruku")
+
+@bot.message_handler(func=lambda m: True)
+def echo_all(message):
+    bot.send_message(message.chat.id, f"Primio: {message.text}")
+
+print("🚀 Bot pokrenut!")
+bot.polling()
+' > bot.py && \
+pip install --break-system-packages pyTelegramBotAPI 2>&1 | tail -3 && \
+echo "" && \
+echo "✅ Bot kreiran! Fajl: /home/z/my-project/telegram-bot/bot.py" && \
+echo "🚀 Za pokretanje: python /home/z/my-project/telegram-bot/bot.py" && \
+ls -la /home/z/my-project/telegram-bot/`
+  }
+
   // AKCIJE - kada korisnik traži DA SE NEŠTO URADI
   if (/napravi|kreiraj|generiši|pokreni|izvrši|instaliraj|kopiraj|obriši|preimenuj|skini|download/i.test(lower)) {
 
     // Telegram bot - PRIJE openclaw!
     if (/telegram|bot/i.test(lower)) {
-      return 'echo "🤖 Kreiram Telegram bot..." && mkdir -p /home/z/my-project/telegram-bot && echo "Bot folder kreiran!" && ls -la /home/z/my-project/telegram-bot'
+      // Ekstraktuj token ako postoji (format: 123456:ABC-DEF...)
+      const tokenMatch = message.match(/(\d{8,10}:[A-Za-z0-9_-]{30,40})/)
+      const token = tokenMatch ? tokenMatch[1] : null
+      
+      if (token) {
+        // Kreiraj kompletan bot sa tokenom
+        return `echo "🤖 Kreiram Telegram bot sa tokenom..." && \
+mkdir -p /home/z/my-project/telegram-bot && \
+cd /home/z/my-project/telegram-bot && \
+echo 'import telebot
+import os
+
+TOKEN = "${token}"
+bot = telebot.TeleBot(TOKEN)
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.send_message(message.chat.id, "🤖 Zdravo! Ja sam Telegram bot kreiran od strane NEGS agenta!")
+
+@bot.message_handler(commands=["help"])
+def help_cmd(message):
+    bot.send_message(message.chat.id, "Komande: /start, /help, ili pošalji poruku")
+
+@bot.message_handler(func=lambda m: True)
+def echo_all(message):
+    bot.send_message(message.chat.id, f"Primio: {message.text}")
+
+print("🚀 Bot pokrenut! Pritisni Ctrl+C da zaustaviš.")
+bot.polling()
+' > bot.py && \
+pip install --break-system-packages pyTelegramBotAPI 2>&1 | tail -5 && \
+echo "✅ Bot spreman! Fajl: /home/z/my-project/telegram-bot/bot.py" && \
+echo "⚠️ Za pokretanje kucaj: python /home/z/my-project/telegram-bot/bot.py" && \
+ls -la /home/z/my-project/telegram-bot/`
+      }
+      
+      // Bez tokena - samo pripremi folder
+      return 'echo "🤖 Kreiram Telegram bot folder..." && mkdir -p /home/z/my-project/telegram-bot && echo "📁 Folder kreiran! Da završim bota, pošalji mi Telegram token (od BotFather)" && ls -la /home/z/my-project/telegram-bot'
     }
 
     // OpenClaw komande
