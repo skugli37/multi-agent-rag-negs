@@ -12,7 +12,7 @@ import { Progress } from '@/components/ui/progress'
 import { 
   Send, Upload, Trash2, Settings, FileText, MessageSquare, 
   Plus, Loader2, Sparkles, Database, ChevronLeft, ChevronRight,
-  Brain, Cpu, Network, Zap, Dna, TrendingUp
+  Brain, Cpu, Network, Zap, Dna, TrendingUp, Terminal
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 
@@ -73,6 +73,7 @@ export default function Home() {
   const [agentThinking, setAgentThinking] = useState<AgentThinking | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
   const [evolutionEvents, setEvolutionEvents] = useState<{ agent: string; before: number; after: number }[]>([])
+  const [terminalOutput, setTerminalOutput] = useState<{ command: string; output: string; success: boolean } | null>(null)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -110,6 +111,7 @@ export default function Home() {
     setSelectedAgent(null)
     setStreamContent('')
     setStreaming(true)
+    setTerminalOutput(null)
 
     try {
       const response = await fetch('/api/chat/stream', {
@@ -156,6 +158,12 @@ export default function Home() {
             if (dataLine?.startsWith('data:')) {
               const data = JSON.parse(dataLine.slice(5))
               setEvolutionEvents(prev => [...prev, ...data.events])
+            }
+          } else if (line.startsWith('event: terminal')) {
+            const dataLine = lines[i + 1]
+            if (dataLine?.startsWith('data:')) {
+              const data = JSON.parse(dataLine.slice(5))
+              setTerminalOutput({ command: data.command, output: data.output, success: data.success })
             }
           } else if (line.startsWith('event: retrieval')) {
             const dataLine = lines[i + 1]
@@ -241,6 +249,7 @@ export default function Home() {
       case 'reasoning': return <Network className="w-4 h-4" />
       case 'response': return <Sparkles className="w-4 h-4" />
       case 'reflection': return <TrendingUp className="w-4 h-4" />
+      case 'terminal': return <Terminal className="w-4 h-4" />
       default: return <Cpu className="w-4 h-4" />
     }
   }
@@ -252,6 +261,7 @@ export default function Home() {
       case 'reasoning': return 'bg-purple-500'
       case 'response': return 'bg-orange-500'
       case 'reflection': return 'bg-pink-500'
+      case 'terminal': return 'bg-yellow-500'
       default: return 'bg-gray-500'
     }
   }
@@ -501,6 +511,21 @@ export default function Home() {
                       <span className="text-gray-400 ml-2">razmišlja...</span>
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* TERMINAL OUTPUT */}
+            {terminalOutput && (
+              <div className="flex justify-start">
+                <div className="max-w-[85%] rounded-lg overflow-hidden bg-gray-900 border border-gray-700">
+                  <div className="flex items-center gap-2 px-3 py-2 bg-gray-800 border-b border-gray-700">
+                    <div className={`w-2 h-2 rounded-full ${terminalOutput.success ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <span className="text-xs font-mono text-gray-400">$ {terminalOutput.command}</span>
+                  </div>
+                  <pre className="p-3 text-xs font-mono text-green-400 overflow-x-auto max-h-60">
+                    {terminalOutput.output || '(prazan izlaz)'}
+                  </pre>
                 </div>
               </div>
             )}
