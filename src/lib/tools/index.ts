@@ -872,7 +872,12 @@ export const terminalTool: Tool = {
       const { stdout, stderr } = await execAsync(command, {
         timeout,
         maxBuffer: 1024 * 1024 * 10,
-        cwd: '/home/z/my-project'
+        cwd: '/home/z/my-project',
+        env: {
+          ...process.env,
+          PATH: `/home/z/.local/bin:${process.env.PATH}`,
+          HOME: '/home/z'
+        }
       })
       
       return {
