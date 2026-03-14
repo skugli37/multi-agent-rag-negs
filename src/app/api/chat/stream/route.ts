@@ -12,6 +12,46 @@ export const dynamic = 'force-dynamic'
 function detectTerminalCommand(message: string): string | null {
   const lower = message.toLowerCase()
 
+  // AKCIJE - kada korisnik traži DA SE NEŠTO URADI
+  if (/napravi|kreiraj|generiši|pokreni|izvrši|instaliraj|kopiraj|obriši|preimenuj|skini|download/i.test(lower)) {
+
+    // Telegram bot - PRIJE openclaw!
+    if (/telegram|bot/i.test(lower)) {
+      return 'echo "🤖 Kreiram Telegram bot..." && mkdir -p /home/z/my-project/telegram-bot && echo "Bot folder kreiran!" && ls -la /home/z/my-project/telegram-bot'
+    }
+
+    // OpenClaw komande
+    if (/openclaw|openclow/i.test(lower)) {
+      if (/status|doctor|info|sistem/i.test(lower)) return 'openclaw-moe doctor'
+      if (/misija|mission/i.test(lower)) return 'openclaw-moe run-mission'
+      if (/gui|web|server/i.test(lower)) return 'openclaw-moe serve-gui'
+      if (/detekcija|detect|anomal/i.test(lower)) return 'openclaw-moe detect-single'
+      if (/model/i.test(lower)) return 'openclaw-moe list-ollama-models'
+      return 'openclaw-moe --help'
+    }
+
+    // Git operacije
+    if (/git|repo/i.test(lower)) {
+      return 'git status'
+    }
+
+    // Folder/Datoteka operacije
+    if (/folder|direktorijum/i.test(lower)) {
+      const folderMatch = lower.match(/(folder|direktorijum)\s+(\w+)/i)
+      if (folderMatch) return `mkdir -p ${folderMatch[2]} && ls -la ${folderMatch[2]}`
+    }
+  }
+
+  // OpenClaw komande (uvek aktivne)
+  if (/openclaw|openclow/i.test(lower)) {
+    if (/status|doctor|info|sistem/i.test(lower)) return 'openclaw-moe doctor'
+    if (/misija|mission|pokreni/i.test(lower)) return 'openclaw-moe run-mission'
+    if (/gui|web|server/i.test(lower)) return 'openclaw-moe serve-gui'
+    if (/detekcija|detect|anomal/i.test(lower)) return 'openclaw-moe detect-single'
+    if (/model/i.test(lower)) return 'openclaw-moe list-ollama-models'
+    return 'openclaw-moe --help'
+  }
+
   // Instalacija paketa
   const installMatch = lower.match(/instaliraj?\s+(paket\s+)?(\w+)/i)
   if (installMatch) {
@@ -37,7 +77,7 @@ function detectTerminalCommand(message: string): string | null {
   }
 
   // Direktna komanda
-  const cmdMatch = lower.match(/^(ls|cat|pwd|whoami|uname|npm|git|echo|mkdir|rm|cp|mv|grep|find|ps|top|df|du|free|systemctl|docker)\s*(.*)$/i)
+  const cmdMatch = lower.match(/^(ls|cat|pwd|whoami|uname|npm|git|echo|mkdir|rm|cp|mv|grep|find|ps|top|df|du|free|systemctl|docker|openclaw-moe|pip|python)\s*(.*)$/i)
   if (cmdMatch) {
     return cmdMatch[0]
   }
@@ -99,8 +139,8 @@ export async function POST(request: NextRequest) {
         const detectedCommand = detectTerminalCommand(message)
 
         // Ako je detektovana terminal komanda, izvrši je odmah
-        if (detectedCommand || /terminal|instaliraj|pokreni|izvrši|shell|sudo|npm|git\s/i.test(message)) {
-          const cmd = detectedCommand || message.replace(/^(terminal|pokreni|izvrši|shell)[:\s]+/i, '')
+        if (detectedCommand || /terminal|instaliraj|pokreni|izvrši|shell|sudo|npm|git\s|openclaw|openclow/i.test(message)) {
+          const cmd = detectedCommand || message.replace(/^(terminal|pokreni|izvrši|shell|koristi)[:\s]+/i, '')
 
           send('negs_thinking', {
             agent: 'terminal',
