@@ -27,7 +27,9 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id])
   conversationId String
   agentType      String?
+  agentName      String?
   confidence     Float?
+  tokens         Int?
 }
 
 model Document {
@@ -36,4 +38,14 @@ model Document {
   content     String
   embedding   String?
   uploadedAt  DateTime @default(now())
+}
+
+model Citation {
+  id          String   @id @default(cuid())
+  messageId   String
+  documentId  String
+  chunkIndex  Int
+  content     String
+  score       Float
+  createdAt   DateTime @default(now())
 }
